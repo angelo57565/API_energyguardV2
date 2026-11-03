@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sqlalchemy>=2.0
+pymysql>=1.1
+cryptography>=42.0
+pydantic-settings>=2.2
+scikit-learn>=1.4
+numpy>=1.26
+joblib>=1.3

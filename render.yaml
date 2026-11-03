@@ -1,0 +1,26 @@
+# Blueprint do Render (plano gratuito). Use "New > Blueprint" ou crie o Web Service
+# manualmente com estes mesmos comandos. As chaves marcadas com sync: false voce
+# preenche no painel do Render (nunca coloque senhas neste arquivo).
+services:
+  - type: web
+    name: energyguard-api
+    runtime: python
+    plan: free
+    # se este arquivo estiver dentro de uma pasta "backend" do repositorio, descomente:
+    # rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.3
+      - key: DATABASE_URL
+        sync: false
+      - key: API_KEY
+        sync: false
+      - key: DATABASE_SSL
+        value: "true"
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
