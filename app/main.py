@@ -10,7 +10,7 @@ from .anomaly import detector
 from .config import get_settings
 from .database import Base, engine, migrate
 from .routers import alerts, analytics, appsettings, model, readings, validations
-from .services import check_offline
+from .services import check_offline, notify_events
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("energyguard")
@@ -25,6 +25,10 @@ async def _watchdog() -> None:
             await asyncio.to_thread(check_offline)
         except Exception:
             log.exception("Falha na verificação de dispositivos offline")
+        try:
+            await asyncio.to_thread(notify_events)
+        except Exception:
+            log.exception("Falha ao processar entregas pendentes")
 
 
 @asynccontextmanager

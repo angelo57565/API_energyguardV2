@@ -1,17 +1,18 @@
 import logging
 import math
 import threading
+from datetime import timedelta
 
 import numpy as np
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from .anomaly import FEATURES, detector
 from .config import get_settings
 from .database import SessionLocal
 from .anomaly_types import TYPES
-from .models import AlertEvent, AlertRule, AppSetting, Reading, utcnow
-from .notify import notify
+from .models import AlertDelivery, AlertEvent, AlertRule, AppSetting, Reading, utcnow
+from .notify import configured_channels, notify_channel
 
 log = logging.getLogger("energyguard")
 _train_lock = threading.Lock()
@@ -155,20 +156,54 @@ def evaluate_alerts(db: Session, reading: Reading) -> list[int]:
 
     if not created:
         return []
+    channels = configured_channels()
+    for event in created:
+        event.deliveries = [AlertDelivery(channel=channel) for channel in channels]
     db.add_all(created)
     db.flush()
     return [e.id for e in created]
 
 
-def notify_events(event_ids: list[int]) -> None:
-    """Envia os eventos por Telegram/e-mail e marca como notificados."""
+def notify_events(event_ids: list[int] | None = None) -> None:
+    """Envia entregas pendentes. O watchdog recupera tentativas após falhas."""
+    channels = configured_channels()
+    if not channels:
+        return
+    due = select(
+        AlertDelivery.event_id, AlertDelivery.channel, AlertEvent.message,
+    ).join(AlertEvent).where(
+        AlertDelivery.channel.in_(channels),
+        AlertDelivery.sent_at.is_(None),
+        AlertDelivery.next_attempt_at <= utcnow(),
+    )
+    if event_ids is not None:
+        due = due.where(AlertDelivery.event_id.in_(event_ids))
     with SessionLocal() as db:
-        for eid in event_ids:
-            ev = db.get(AlertEvent, eid)
-            if ev is None:
+        pending = db.execute(due.order_by(AlertDelivery.next_attempt_at).limit(20)).all()
+
+    for event_id, channel, message in pending:
+        now = utcnow()
+        identity = (AlertDelivery.event_id == event_id, AlertDelivery.channel == channel)
+        with SessionLocal.begin() as db:
+            claimed = db.execute(update(AlertDelivery).where(
+                *identity, AlertDelivery.sent_at.is_(None), AlertDelivery.next_attempt_at <= now,
+            ).values(attempts=AlertDelivery.attempts + 1, next_attempt_at=now + timedelta(minutes=2)))
+            if claimed.rowcount != 1:
                 continue
-            ev.notified = notify(ev.message)
-        db.commit()
+            attempt = db.scalar(select(AlertDelivery.attempts).where(*identity))
+
+        sent = notify_channel(channel, message)
+        now = utcnow()
+        delay = min(60 * 2 ** min(attempt - 1, 6), 3600)
+        with SessionLocal.begin() as db:
+            result = db.execute(update(AlertDelivery).where(
+                *identity, AlertDelivery.attempts == attempt, AlertDelivery.sent_at.is_(None),
+            ).values(
+                sent_at=now if sent else None,
+                next_attempt_at=None if sent else now + timedelta(seconds=delay),
+            ))
+            if sent and result.rowcount == 1:
+                db.execute(update(AlertEvent).where(AlertEvent.id == event_id).values(notified=True))
 
 
 def check_offline() -> None:
@@ -195,6 +230,7 @@ def check_offline() -> None:
             ev = AlertEvent(
                 kind="offline", device_id=device,
                 message=f"OFFLINE - {device} está sem enviar dados há {int(silent // 60)} min",
+                deliveries=[AlertDelivery(channel=channel) for channel in configured_channels()],
             )
             db.add(ev)
             db.commit()

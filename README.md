@@ -87,6 +87,9 @@ conta o valor acumulado desde o reset.
 - **Anomalia do Isolation Forest** também gera aviso (`NOTIFY_ON_ANOMALY`).
 - **ESP32 offline** (sem dados por `OFFLINE_AFTER_S`) gera aviso, uma vez por queda.
 - Os avisos ficam salvos no banco e, se configurado no `.env`, vão por **Telegram** e/ou **e-mail**.
+- A API registra cada entrega por canal em `GET /api/alerts/events` (`deliveries`). Em caso de falha,
+  tenta de novo após 1 minuto e aumenta o intervalo até 1 hora. A fila continua disponível após
+  reiniciar a API se o banco for persistente. O campo `notified` indica que ao menos um canal confirmou o envio.
 
 ## Banco antigo
 

@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -134,3 +134,38 @@ def test_legacy_schema_migration_retains_rows(tmp_path, monkeypatch):
         for index in inspect(engine).get_indexes("readings")
     )
     engine.dispose()
+
+
+def test_alert_retries_only_the_unconfirmed_channel(api, monkeypatch):
+    clock = [datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=1)]
+    monkeypatch.setattr(services, "utcnow", lambda: clock[0])
+    monkeypatch.setattr(services, "configured_channels", lambda: ["telegram", "email"])
+    calls = []
+
+    def send(channel, _message):
+        calls.append(channel)
+        return channel == "telegram" or calls.count("email") > 1
+
+    monkeypatch.setattr(services, "notify_channel", send)
+    rule = {"name": "Tensão", "metric": "voltage", "operator": ">", "threshold": 120}
+    assert api.post("/api/alerts/rules", json=rule).status_code == 201
+    assert upload(api, sample(1, 10)).status_code == 201
+    event = api.get("/api/alerts/events").json()[0]
+    deliveries = {row["channel"]: row for row in event["deliveries"]}
+    assert event["notified"] is True
+    assert deliveries["telegram"]["sent_at"] is not None
+    assert deliveries["email"]["sent_at"] is None
+    assert deliveries["email"]["attempts"] == 1
+    services.notify_events()
+    assert calls.count("email") == 1
+
+    clock[0] += timedelta(seconds=61)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda _: services.notify_events(), range(2)))
+    event = api.get("/api/alerts/events").json()[0]
+    deliveries = {row["channel"]: row for row in event["deliveries"]}
+    assert deliveries["email"]["sent_at"] is not None
+    assert deliveries["email"]["attempts"] == 2
+    assert deliveries["email"]["next_attempt_at"] is None
+    assert calls.count("telegram") == 1
+    assert calls.count("email") == 2

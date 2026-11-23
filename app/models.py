@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
 
@@ -68,6 +68,17 @@ class AlertEvent(Base):
     threshold: Mapped[float | None] = mapped_column(Float, nullable=True)
     message: Mapped[str] = mapped_column(String(255))
     notified: Mapped[bool] = mapped_column(Boolean, default=False)
+    deliveries: Mapped[list["AlertDelivery"]] = relationship(lazy="selectin")
+
+
+class AlertDelivery(Base):
+    __tablename__ = "alert_deliveries"
+
+    event_id: Mapped[int] = mapped_column(ForeignKey("alert_events.id"), primary_key=True)
+    channel: Mapped[str] = mapped_column(String(16), primary_key=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, index=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class AppSetting(Base):

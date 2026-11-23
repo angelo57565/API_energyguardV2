@@ -92,6 +92,19 @@ class AlertRuleOut(AlertRuleIn):
     id: int
 
 
+class AlertDeliveryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    channel: str
+    attempts: int
+    sent_at: datetime | None
+    next_attempt_at: datetime | None
+
+    @field_serializer("sent_at", "next_attempt_at")
+    def _ser_time(self, value: datetime | None) -> str | None:
+        return _z(value) if value is not None else None
+
+
 class AlertEventOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -105,6 +118,7 @@ class AlertEventOut(BaseModel):
     threshold: float | None = None
     message: str
     notified: bool
+    deliveries: list[AlertDeliveryOut]
 
     @field_serializer("created_at")
     def _ser_created(self, value: datetime) -> str:
