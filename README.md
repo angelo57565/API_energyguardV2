@@ -62,6 +62,7 @@ python -m pytest -q
 | GET | `/model/status` · `/model/evaluation` | Estado do modelo · precisão/recall pelos seus rótulos |
 | POST | `/model/train` | Treina/retreina agora |
 | GET | `/health` (sem `/api`) | Checagem rápida |
+| GET | `/ready` (sem `/api`) | Checagem de conexão com o banco usada pelo Blueprint do Render (503 se indisponível) |
 
 Payload do `POST /api/readings` (os 4 últimos campos são opcionais):
 

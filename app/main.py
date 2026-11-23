@@ -2,8 +2,10 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from . import models  # noqa: F401  (registra as tabelas)
 from .anomaly import detector
@@ -70,3 +72,13 @@ for r in (readings.router, model.router, alerts.router, analytics.router,
 @app.get("/health")
 def health():
     return {"status": "ok", "model_ready": detector.ready}
+
+
+@app.get("/ready", responses={503: {"description": "Banco indisponível"}})
+def readiness():
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except SQLAlchemyError:
+        raise HTTPException(status_code=503, detail="Banco de dados indisponível") from None
+    return {"status": "ready"}

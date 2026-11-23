@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 
 from app import database, main, services
@@ -63,6 +64,19 @@ def test_concurrent_replay(api):
         results = [future.result().json() for future in futures]
     assert sorted(result["stored"] for result in results) == [0, 1]
     assert sorted(result["duplicates"] for result in results) == [0, 1]
+
+
+def test_readiness_checks_database_connection(api, monkeypatch):
+    assert api.get("/ready").json() == {"status": "ready"}
+
+    def unavailable():
+        raise OperationalError(None, None, OSError("connection refused"))
+
+    monkeypatch.setattr(main.engine, "connect", unavailable)
+    result = api.get("/ready")
+    assert result.status_code == 503
+    assert result.json() == {"detail": "Banco de dados indisponível"}
+    assert api.get("/health").status_code == 200
 
 
 def test_last_seen_uses_receipt_and_invalid_epoch_is_accepted(api):
