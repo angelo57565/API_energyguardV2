@@ -20,14 +20,12 @@ def api(tmp_path, monkeypatch):
     monkeypatch.setattr(database, "SessionLocal", sessions)
     monkeypatch.setattr(services, "SessionLocal", sessions)
     settings = get_settings()
-    monkeypatch.setattr(settings, "api_key", "dashboard")
-    monkeypatch.setattr(settings, "ingest_api_key", "esp32")
-    monkeypatch.setattr(settings, "require_api_keys", True)
+    monkeypatch.setattr(settings, "api_key", "test-key")
     monkeypatch.setattr(settings, "model_path", str(tmp_path / "model.joblib"))
     monkeypatch.setattr(settings, "min_train_samples", 200)
     monkeypatch.setattr(services.detector, "_model", None)
     monkeypatch.setattr(services.detector, "_meta", {})
-    with TestClient(main.app, headers={"X-API-Key": "dashboard"}) as client:
+    with TestClient(main.app, headers={"X-API-Key": "test-key"}) as client:
         yield client
     engine.dispose()
 
@@ -41,7 +39,7 @@ def sample(energy, seconds_ago, device="esp32-01", frequency=60):
 
 
 def upload(api, *samples):
-    return api.post("/api/readings/batch", json={"readings": samples}, headers={"X-API-Key": "esp32"})
+    return api.post("/api/readings/batch", json={"readings": samples})
 
 
 def test_consumption_per_device_with_reset_and_delayed_readings(api):
@@ -100,10 +98,11 @@ def test_batch_rolls_back_readings_and_alerts(api, monkeypatch):
 
 
 def test_credentials_and_quality(api):
-    assert api.get("/api/summary", headers={"X-API-Key": "esp32"}).status_code == 401
-    assert api.post("/api/readings", json=sample(1, 10)).status_code == 401
+    assert api.get("/api/summary", headers={"X-API-Key": "wrong"}).status_code == 401
+    assert api.post("/api/readings", json=sample(1, 30)).status_code == 201
+    assert api.get("/api/summary").json()["readings"] == 1
     assert upload(api, sample(1, 20, frequency=0), sample(2, 10, frequency=58)).status_code == 201
-    assert api.get("/api/quality").json()["frequency"]["out_pct"] == 100
+    assert api.get("/api/quality").json()["frequency"]["out_pct"] == 50
     assert api.get("/api/quality?vmin=133&vmax=117").status_code == 422
 
 

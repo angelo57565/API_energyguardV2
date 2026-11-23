@@ -13,8 +13,6 @@ class Settings(BaseSettings):
     database_ssl_ca: str = ""       # caminho do arquivo ca.pem (verifica o servidor)
     database_ssl_ca_pem: str = ""   # ou o conteudo do ca.pem numa variavel de ambiente
     api_key: str = ""
-    ingest_api_key: str = ""
-    require_api_keys: bool = False
     cors_origins: str = "*"
 
     # Isolation Forest

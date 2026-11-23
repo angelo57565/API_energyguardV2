@@ -31,7 +31,7 @@ e libere a porta 8000 no firewall.
 ## 4. Testar sem hardware
 
 Abra `/docs`, selecione `POST /api/readings` e envie o payload de exemplo abaixo.
-Preencha o header `X-API-Key` com a chave de coleta configurada.
+Preencha o header `X-API-Key` com a `API_KEY` configurada.
 
 Para rodar os testes de regressão em SQLite:
 
@@ -40,14 +40,7 @@ pip install pytest httpx
 python -m pytest -q
 ```
 
-## Autenticação e endpoints
-
-Use o header `X-API-Key` com `API_KEY` no dashboard e com `INGEST_API_KEY` no ESP32.
-A chave do ESP32 permite apenas os dois POSTs de leituras. Para publicar, configure duas chaves distintas
-e habilite `REQUIRE_API_KEYS=true` (padrão no Render). Atualize a chave no ESP32 ao migrar
-para a nova versão. No modo local, se `INGEST_API_KEY` estiver vazia, os POSTs usam `API_KEY`.
-
-As rotas usam o prefixo `/api`, exceto `/health`.
+## Endpoints (todos em `/api`, header `X-API-Key` se `API_KEY` estiver definida)
 
 | Método | Rota | Para quê |
 |---|---|---|

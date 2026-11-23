@@ -13,11 +13,10 @@ from ..database import get_db
 from ..models import Reading, utcnow
 from ..timeutil import created_at_from_epoch
 from ..schemas import FeedbackIn, ReadingBatch, ReadingOut, ReadingUpload
-from ..security import require_api_key, require_ingest_key
+from ..security import require_api_key
 from ..services import evaluate_alerts, feature_stats, maybe_train, nominal_voltage, notify_events
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
-ingest_router = APIRouter(dependencies=[Depends(require_ingest_key)])
 
 
 def _to_naive_utc(dt: datetime | None) -> datetime | None:
@@ -86,7 +85,7 @@ def _begin_ingestion(db: Session) -> None:
         db.connection().exec_driver_sql("BEGIN IMMEDIATE")
 
 
-@ingest_router.post("/readings", response_model=ReadingOut, status_code=201)
+@router.post("/readings", response_model=ReadingOut, status_code=201)
 def create_reading(
     payload: ReadingUpload,
     background: BackgroundTasks,
@@ -103,7 +102,7 @@ def create_reading(
     return reading
 
 
-@ingest_router.post("/readings/batch", status_code=201)
+@router.post("/readings/batch", status_code=201)
 def create_readings_batch(
     body: ReadingBatch,
     background: BackgroundTasks,
