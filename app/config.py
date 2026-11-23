@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -17,7 +18,7 @@ class Settings(BaseSettings):
     # Isolation Forest
     model_path: str = "models/isolation_forest.joblib"
     min_train_samples: int = 200
-    retrain_every: int = 500
+    retrain_every: int = Field(default=500, ge=1)
     train_window: int = 20000
     contamination: float = 0.02
     n_estimators: int = 200

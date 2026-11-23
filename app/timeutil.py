@@ -13,7 +13,10 @@ def created_at_from_epoch(epoch: int | None, now: datetime | None = None) -> tup
     now = now or utcnow()
     if epoch is None or epoch < MIN_VALID_EPOCH:
         return now, False
-    moment = datetime.fromtimestamp(epoch, timezone.utc).replace(tzinfo=None)
+    try:
+        moment = datetime.fromtimestamp(epoch, timezone.utc).replace(tzinfo=None)
+    except (OverflowError, OSError, ValueError):
+        return now, False
     if moment > now + MAX_FUTURE or moment < now - MAX_AGE:
         return now, False
     return moment, True

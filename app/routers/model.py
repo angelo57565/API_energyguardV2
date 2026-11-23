@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
 from ..anomaly import detector
@@ -34,28 +34,40 @@ def evaluation(device_id: str | None = None, db: Session = Depends(get_db)):
     - FN: o modelo não marcou, mas era anomalia - TN: o modelo não marcou e era normal
     O recall só é confiável se você também rotular leituras que o modelo deixou passar.
     """
-    q = (
-        select(Reading.is_anomaly, Reading.feedback, func.count(Reading.id))
-        .where(Reading.feedback.is_not(None))
-        .group_by(Reading.is_anomaly, Reading.feedback)
-    )
+    q = select(*_confusion_counts()).where(*_evaluated_readings())
     if device_id:
         q = q.where(Reading.device_id == device_id)
 
-    tp = fp = fn = tn = 0
-    for flagged, label, n in db.execute(q).all():
-        if flagged and label == "real":
-            tp += n
-        elif flagged and label == "false":
-            fp += n
-        elif not flagged and label == "real":
-            fn += n
-        else:
-            tn += n
+    return _metrics(*db.execute(q).one())
 
+
+@router.get("/evaluation/devices")
+def evaluation_by_device(db: Session = Depends(get_db)):
+    """Compara os medidores com previsões rotuladas."""
+    q = (
+        select(Reading.device_id, *_confusion_counts())
+        .where(*_evaluated_readings())
+        .group_by(Reading.device_id)
+        .order_by(Reading.device_id)
+    )
+    return [{"device_id": device_id, **_metrics(*counts)} for device_id, *counts in db.execute(q)]
+
+
+def _evaluated_readings():
+    return Reading.anomaly_score.is_not(None), Reading.feedback.in_(("real", "false"))
+
+
+def _confusion_counts():
+    return [
+        func.count(case((and_(Reading.is_anomaly.is_(flagged), Reading.feedback == label), 1)))
+        for flagged, label in ((True, "real"), (True, "false"), (False, "real"), (False, "false"))
+    ]
+
+def _metrics(tp: int, fp: int, fn: int, tn: int) -> dict:
     precision = tp / (tp + fp) if (tp + fp) else None
     recall = tp / (tp + fn) if (tp + fn) else None
-    f1 = (2 * precision * recall / (precision + recall)) if (precision and recall) else None
+    f1_denominator = 2 * tp + fp + fn
+    f1 = 2 * tp / f1_denominator if f1_denominator else None
     return {
         "labeled": tp + fp + fn + tn,
         "tp": tp, "fp": fp, "fn": fn, "tn": tn,

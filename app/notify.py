@@ -44,17 +44,25 @@ def send_email(text: str) -> bool:
     return True
 
 
+def configured_channels() -> list[str]:
+    channels = []
+    if telegram_configured():
+        channels.append("telegram")
+    if email_configured():
+        channels.append("email")
+    return channels
+
+
+def notify_channel(channel: str, text: str) -> bool:
+    sender = {"telegram": send_telegram, "email": send_email}[channel]
+    try:
+        return sender(text)
+    except (OSError, ValueError) as exc:
+        log.warning("Falha ao enviar alerta por %s (%s)", channel, type(exc).__name__)
+        return False
+
+
 def notify(text: str) -> bool:
     """Tenta todos os canais configurados. True se pelo menos um enviou."""
-    ok = False
-    if telegram_configured():
-        try:
-            ok = send_telegram(text) or ok
-        except Exception:
-            log.exception("Falha ao enviar Telegram")
-    if email_configured():
-        try:
-            ok = send_email(text) or ok
-        except Exception:
-            log.exception("Falha ao enviar e-mail")
-    return ok
+    results = [notify_channel(channel, text) for channel in configured_channels()]
+    return any(results)

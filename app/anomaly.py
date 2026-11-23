@@ -1,3 +1,4 @@
+import tempfile
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,7 +41,7 @@ class AnomalyDetector:
             self._meta = bundle["meta"]
         return True
 
-    def train(self, X: np.ndarray) -> dict:
+    def train(self, X: np.ndarray, total: int) -> dict:
         s = get_settings()
         model = make_pipeline(
             StandardScaler(),
@@ -55,6 +56,7 @@ class AnomalyDetector:
         meta = {
             "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "n_samples": int(X.shape[0]),
+            "readings_at_train": total,
             "features": FEATURES,
             "contamination": s.contamination,
             "n_estimators": s.n_estimators,
@@ -64,7 +66,13 @@ class AnomalyDetector:
         }
         path = Path(s.model_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        joblib.dump({"model": model, "meta": meta}, path)
+        with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as tmp:
+            temporary_path = Path(tmp.name)
+        try:
+            joblib.dump({"model": model, "meta": meta}, temporary_path)
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
         with self._lock:
             self._model = model
             self._meta = meta
