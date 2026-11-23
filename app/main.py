@@ -7,10 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
-from . import models  # noqa: F401  (registra as tabelas)
 from .anomaly import detector
 from .config import get_settings
-from .database import Base, engine, migrate
+from .database import engine, migrate
 from .routers import alerts, analytics, appsettings, model, readings, validations
 from .services import check_offline, notify_events
 
@@ -38,7 +37,6 @@ async def lifespan(app: FastAPI):
     if not settings.api_key:
         log.warning("API_KEY vazia: qualquer pessoa com o endereço acessa a API. "
                     "Defina API_KEY antes de publicar na internet.")
-    Base.metadata.create_all(bind=engine)
     migrate()
     if detector.load():
         log.info("Modelo carregado: %s", detector.meta)

@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import database, main, services
 from app.config import get_settings
+from app.models import Reading
 from app.routers import readings
 
 
@@ -143,11 +144,37 @@ def test_legacy_schema_migration_retains_rows(tmp_path, monkeypatch):
     database.migrate()
     with engine.connect() as conn:
         assert conn.execute(select(database.Base.metadata.tables["readings"].c.id)).scalar_one() == 1
+        assert conn.exec_driver_sql("SELECT version_num FROM alembic_version").scalar_one() == "0001"
     assert any(
         index["name"] == "ux_readings_device_measured" and index["unique"]
         for index in inspect(engine).get_indexes("readings")
     )
     engine.dispose()
+
+
+def test_model_evaluation_by_device_uses_only_labeled_predictions(api):
+    assert upload(
+        api, sample(1, 90, "a"), sample(2, 80, "a"), sample(3, 70, "a"),
+        sample(1, 60, "b"), sample(2, 50, "b"), sample(1, 40, "c"),
+    ).status_code == 201
+    with database.SessionLocal.begin() as db:
+        rows = db.scalars(select(Reading).order_by(Reading.id)).all()
+        for row, (flagged, label, score) in zip(rows, (
+            (True, "real", -0.1), (True, "false", -0.1), (False, "false", 0.1),
+            (False, "real", 0.1), (False, "false", None), (False, None, 0.1),
+        )):
+            row.is_anomaly = flagged
+            row.feedback = label
+            row.anomaly_score = score
+
+    results = api.get("/api/model/evaluation/devices").json()
+    assert [(row["device_id"], row["labeled"]) for row in results] == [("a", 3), ("b", 1)]
+    assert results[0]["precision"] == 0.5
+    assert results[0]["recall"] == 1.0
+    assert results[1]["fn"] == 1
+    assert results[1]["f1"] == 0.0
+    assert api.get("/api/model/evaluation").json()["labeled"] == 4
+    assert api.get("/api/model/evaluation?device_id=b").json()["recall"] == 0.0
 
 
 def test_alert_retries_only_the_unconfirmed_channel(api, monkeypatch):
