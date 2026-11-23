@@ -30,11 +30,24 @@ e libere a porta 8000 no firewall.
 
 ## 4. Testar sem hardware
 
+Abra `/docs`, selecione `POST /api/readings` e envie o payload de exemplo abaixo.
+Preencha o header `X-API-Key` com a chave de coleta configurada.
+
+Para rodar os testes de regressão em SQLite:
+
 ```bash
-python scripts/simulate.py --n 300 --key SUA_CHAVE
+pip install pytest httpx
+python -m pytest -q
 ```
 
-## Endpoints (todos em `/api`, header `X-API-Key` se `API_KEY` estiver definida)
+## Autenticação e endpoints
+
+Use o header `X-API-Key` com `API_KEY` no dashboard e com `INGEST_API_KEY` no ESP32.
+A chave do ESP32 permite apenas os dois POSTs de leituras. Para publicar, configure duas chaves distintas
+e habilite `REQUIRE_API_KEYS=true` (padrão no Render). Atualize a chave no ESP32 ao migrar
+para a nova versão. No modo local, se `INGEST_API_KEY` estiver vazia, os POSTs usam `API_KEY`.
+
+As rotas usam o prefixo `/api`, exceto `/health`.
 
 | Método | Rota | Para quê |
 |---|---|---|
@@ -47,7 +60,7 @@ python scripts/simulate.py --n 300 --key SUA_CHAVE
 | GET | `/devices` | Dispositivos, última vez visto, Wi-Fi (RSSI), uptime e falhas de envio |
 | GET | `/summary?device_id=&hours=24` | Médias, picos, energia e nº de anomalias |
 | GET | `/consumption/hourly?device_id=&hours=168` | kWh por hora (UTC) |
-| GET | `/quality?device_id=&hours=24&vmin=&vmax=` | % do tempo com tensão/frequência fora da faixa |
+| GET | `/quality?device_id=&hours=24&vmin=&vmax=` | % de amostras válidas com tensão/frequência fora da faixa |
 | GET/POST/PUT/DELETE | `/alerts/rules` | Regras de alerta por limite |
 | GET | `/alerts/events` | Histórico de alertas |
 | GET / POST | `/alerts/channels`, `/alerts/test` | Canais configurados / mensagem de teste |
@@ -57,7 +70,7 @@ python scripts/simulate.py --n 300 --key SUA_CHAVE
 | POST | `/model/train` | Treina/retreina agora |
 | GET | `/health` (sem `/api`) | Checagem rápida |
 
-Payload do `POST /api/readings` (os 3 últimos campos são opcionais):
+Payload do `POST /api/readings` (os 4 últimos campos são opcionais):
 
 ```json
 {"device_id":"esp32-01","voltage":127.1,"current":3.2,"power":390.5,
@@ -67,7 +80,12 @@ Payload do `POST /api/readings` (os 3 últimos campos são opcionais):
 
 `measured_ts` (opcional) é o horário da medição em segundos desde 1970 (UTC). Com ele, leituras que ficaram na fila
 do ESP32 entram com a hora certa. Horários inválidos (no futuro ou com mais de 7 dias) são ignorados e vale a hora
-de chegada. Leituras repetidas (mesmo dispositivo e mesmo horário) são descartadas.
+de chegada. Reenvios com horário válido e igual para o mesmo dispositivo são descartados.
+
+As consultas cronológicas usam o horário de medição. O status online usa o horário de recebimento.
+No consumo, a primeira amostra de cada medidor na janela é a referência. As diferenças seguintes
+contam na hora da medição mais recente. Uma queda do contador indica reset para zero, e o cálculo
+conta o valor acumulado desde o reset.
 
 ## Alertas
 

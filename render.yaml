@@ -18,6 +18,10 @@ services:
         sync: false
       - key: API_KEY
         sync: false
+      - key: INGEST_API_KEY
+        sync: false
+      - key: REQUIRE_API_KEYS
+        value: "true"
       - key: DATABASE_SSL
         value: "true"
       - key: TELEGRAM_BOT_TOKEN

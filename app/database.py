@@ -56,6 +56,8 @@ _NEW_COLUMNS = {
         "reasons": "TEXT",
         "feedback": "VARCHAR(16)",
         "anomaly_types": "VARCHAR(120)",
+        "received_at": "DATETIME",
+        "measured_ts": "BIGINT",
     }
 }
 
@@ -71,3 +73,10 @@ def migrate() -> None:
             for name, ddl in cols.items():
                 if name not in existing:
                     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+    if insp.has_table("readings") and not any(
+        index["name"] == "ux_readings_device_measured" for index in insp.get_indexes("readings")
+    ):
+        with engine.begin() as conn:
+            conn.execute(text(
+                "CREATE UNIQUE INDEX ux_readings_device_measured ON readings (device_id, measured_ts)"
+            ))

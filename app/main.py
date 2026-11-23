@@ -29,6 +29,12 @@ async def _watchdog() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if (settings.require_api_keys or settings.ingest_api_key) and not settings.api_key:
+        raise RuntimeError("Defina API_KEY para proteger as rotas de consulta e administração.")
+    if settings.require_api_keys and (
+        not settings.ingest_api_key or settings.ingest_api_key == settings.api_key
+    ):
+        raise RuntimeError("Defina INGEST_API_KEY com um valor diferente de API_KEY.")
     if not settings.api_key:
         log.warning("API_KEY vazia: qualquer pessoa com o endereço acessa a API. "
                     "Defina API_KEY antes de publicar na internet.")
@@ -58,7 +64,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (readings.router, model.router, alerts.router, analytics.router,
+for r in (readings.router, readings.ingest_router, model.router, alerts.router, analytics.router,
           appsettings.router, validations.router):
     app.include_router(r, prefix="/api")
 

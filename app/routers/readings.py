@@ -3,18 +3,21 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..anomaly import FEATURES, detector
 from ..anomaly_types import TYPES, classify
+from ..consumption import energy_deltas
 from ..database import get_db
 from ..models import Reading, utcnow
 from ..timeutil import created_at_from_epoch
 from ..schemas import FeedbackIn, ReadingBatch, ReadingOut, ReadingUpload
-from ..security import require_api_key
+from ..security import require_api_key, require_ingest_key
 from ..services import evaluate_alerts, feature_stats, maybe_train, nominal_voltage, notify_events
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
+ingest_router = APIRouter(dependencies=[Depends(require_ingest_key)])
 
 
 def _to_naive_utc(dt: datetime | None) -> datetime | None:
@@ -27,17 +30,28 @@ def _to_naive_utc(dt: datetime | None) -> datetime | None:
 
 def _ingest(db: Session, payload: ReadingUpload) -> tuple[Reading | None, list[int]]:
     data = payload.model_dump(exclude={"measured_ts"})
-    created_at, from_device = created_at_from_epoch(payload.measured_ts)
+    received_at = utcnow()
+    created_at, from_device = created_at_from_epoch(payload.measured_ts, received_at)
     if from_device:
+        # Registros anteriores à migração só têm o horário da medição.
         duplicate = db.scalar(
-            select(Reading.id).where(Reading.device_id == payload.device_id, Reading.created_at == created_at)
+            select(Reading.id).where(
+                Reading.device_id == payload.device_id,
+                Reading.received_at.is_(None),
+                Reading.created_at == created_at,
+            ).limit(1)
         )
         if duplicate is not None:
             return None, []
 
-    reading = Reading(**data, created_at=created_at)
+    reading = Reading(
+        **data, created_at=created_at, received_at=received_at,
+        measured_ts=payload.measured_ts if from_device else None,
+    )
     previous = db.scalars(
-        select(Reading).where(Reading.device_id == reading.device_id).order_by(Reading.id.desc()).limit(1)
+        select(Reading).where(
+            Reading.device_id == reading.device_id, Reading.created_at <= created_at,
+        ).order_by(Reading.created_at.desc(), Reading.id.desc()).limit(1)
     ).first()
 
     features = [getattr(reading, f) for f in FEATURES]
@@ -51,28 +65,45 @@ def _ingest(db: Session, payload: ReadingUpload) -> tuple[Reading | None, list[i
             codes = classify(reading, previous, feature_stats(), nominal_voltage(db))
             reading.anomaly_types = ",".join(codes)
 
-    db.add(reading)
-    db.commit()
-    db.refresh(reading)
+    try:
+        with db.begin_nested():
+            db.add(reading)
+            db.flush()
+    except IntegrityError:
+        if not from_device or db.scalar(
+            select(Reading.id).where(
+                Reading.device_id == payload.device_id, Reading.measured_ts == payload.measured_ts,
+            ).with_for_update()
+        ) is None:
+            raise
+        return None, []
     return reading, evaluate_alerts(db, reading)
 
 
-@router.post("/readings", response_model=ReadingOut, status_code=201)
+def _begin_ingestion(db: Session) -> None:
+    if db.get_bind().dialect.name == "sqlite":
+        # Inclui os savepoints na transação e serializa a escrita concorrente.
+        db.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+
+@ingest_router.post("/readings", response_model=ReadingOut, status_code=201)
 def create_reading(
     payload: ReadingUpload,
     background: BackgroundTasks,
     db: Session = Depends(get_db),
 ):
+    _begin_ingestion(db)
     reading, event_ids = _ingest(db, payload)
     if reading is None:
         raise HTTPException(409, "Leitura duplicada")
+    db.commit()
     if event_ids:
         background.add_task(notify_events, event_ids)
     background.add_task(maybe_train)
     return reading
 
 
-@router.post("/readings/batch", status_code=201)
+@ingest_router.post("/readings/batch", status_code=201)
 def create_readings_batch(
     body: ReadingBatch,
     background: BackgroundTasks,
@@ -81,7 +112,8 @@ def create_readings_batch(
     """Recebe várias leituras de uma vez (o ESP32 manda assim depois de ficar offline)."""
     stored = duplicates = anomalies = 0
     event_ids: list[int] = []
-    for item in sorted(body.readings, key=lambda r: r.measured_ts or 0):
+    _begin_ingestion(db)
+    for item in sorted(body.readings, key=lambda r: (r.measured_ts or 0, r.device_id)):
         reading, ids = _ingest(db, item)
         if reading is None:
             duplicates += 1
@@ -89,6 +121,7 @@ def create_readings_batch(
         stored += 1
         anomalies += int(reading.is_anomaly)
         event_ids.extend(ids)
+    db.commit()
     if event_ids:
         background.add_task(notify_events, event_ids)
     if stored:
@@ -110,7 +143,7 @@ def list_readings(
     since = _to_naive_utc(since)
     if since:
         q = q.where(Reading.created_at >= since)
-    rows = db.scalars(q.order_by(Reading.id.desc()).limit(limit)).all()
+    rows = db.scalars(q.order_by(Reading.created_at.desc(), Reading.id.desc()).limit(limit)).all()
     return list(reversed(rows))
 
 
@@ -119,7 +152,7 @@ def latest_reading(device_id: str | None = None, db: Session = Depends(get_db)):
     q = select(Reading)
     if device_id:
         q = q.where(Reading.device_id == device_id)
-    row = db.scalars(q.order_by(Reading.id.desc()).limit(1)).first()
+    row = db.scalars(q.order_by(Reading.created_at.desc(), Reading.id.desc()).limit(1)).first()
     if row is None:
         raise HTTPException(404, "Nenhuma leitura encontrada")
     return row
@@ -150,20 +183,21 @@ def list_anomalies(
     q = select(Reading).where(Reading.is_anomaly.is_(True))
     if device_id:
         q = q.where(Reading.device_id == device_id)
-    return db.scalars(q.order_by(Reading.id.desc()).limit(limit)).all()
+    return db.scalars(q.order_by(Reading.created_at.desc(), Reading.id.desc()).limit(limit)).all()
 
 
 @router.get("/devices")
 def list_devices(db: Session = Depends(get_db)):
     rows = db.execute(
-        select(Reading.device_id, func.count(Reading.id), func.max(Reading.created_at))
+        select(Reading.device_id, func.count(Reading.id), func.max(func.coalesce(Reading.received_at, Reading.created_at)))
         .group_by(Reading.device_id)
         .order_by(Reading.device_id)
     ).all()
     out = []
     for device, n, last in rows:
         latest = db.scalars(
-            select(Reading).where(Reading.device_id == device).order_by(Reading.id.desc()).limit(1)
+            select(Reading).where(Reading.device_id == device)
+            .order_by(Reading.created_at.desc(), Reading.id.desc()).limit(1)
         ).first()
         out.append({
             "device_id": device,
@@ -190,18 +224,16 @@ def summary(
         func.max(Reading.current),
         func.avg(Reading.power),
         func.max(Reading.power),
-        func.min(Reading.energy),
-        func.max(Reading.energy),
         func.sum(case((Reading.is_anomaly.is_(True), 1), else_=0)),
     ).where(Reading.created_at >= since)
     if device_id:
         q = q.where(Reading.device_id == device_id)
-    n, v_avg, i_avg, i_max, p_avg, p_max, e_min, e_max, n_anom = db.execute(q).one()
+    n, v_avg, i_avg, i_max, p_avg, p_max, n_anom = db.execute(q).one()
 
     def r(x, nd=2):
         return round(float(x), nd) if x is not None else None
 
-    consumed = (e_max - e_min) if (e_max is not None and e_min is not None) else None
+    consumed = sum(delta for _, delta in energy_deltas(db, since, device_id)) if n else None
     return {
         "device_id": device_id,
         "hours": hours,

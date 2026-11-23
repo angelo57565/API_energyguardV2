@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Index, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Float, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -23,6 +23,8 @@ class Reading(Base):
     frequency: Mapped[float] = mapped_column(Float)
     power_factor: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    measured_ts: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     is_anomaly: Mapped[bool] = mapped_column(Boolean, default=False)
     anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     # saude do ESP32 (opcionais)
@@ -34,7 +36,10 @@ class Reading(Base):
     feedback: Mapped[str | None] = mapped_column(String(16), nullable=True)
     anomaly_types: Mapped[str | None] = mapped_column(String(120), nullable=True)
 
-    __table_args__ = (Index("ix_readings_device_created", "device_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_readings_device_created", "device_id", "created_at"),
+        Index("ux_readings_device_measured", "device_id", "measured_ts", unique=True),
+    )
 
 
 class AlertRule(Base):

@@ -1,22 +1,17 @@
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..database import engine, get_db
+from ..consumption import energy_deltas
+from ..database import get_db
 from ..models import Reading, utcnow
 from ..security import require_api_key
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
 
 MIN_MAINS_V = 20.0  # abaixo disso consideramos "sem rede"
-
-
-def _hour_bucket():
-    if engine.dialect.name == "sqlite":
-        return func.strftime("%Y-%m-%dT%H:00:00", Reading.created_at)
-    return func.date_format(Reading.created_at, "%Y-%m-%dT%H:00:00")
 
 
 @router.get("/consumption/hourly")
@@ -27,33 +22,29 @@ def consumption_hourly(
 ):
     """kWh consumidos por hora (horas em UTC; o dashboard converte para o fuso local)."""
     since = utcnow() - timedelta(hours=hours)
-    bucket = _hour_bucket()
-    q = select(bucket, func.min(Reading.energy), func.max(Reading.energy)).where(Reading.created_at >= since)
-    if device_id:
-        q = q.where(Reading.device_id == device_id)
-    rows = db.execute(q.group_by(bucket).order_by(bucket)).all()
-
-    out = []
-    prev_max = None
-    for period, e_min, e_max in rows:
-        # o que foi consumido entre a ultima leitura da hora anterior e a 1a desta conta aqui
-        start = prev_max if (prev_max is not None and prev_max <= e_min) else e_min
-        out.append({"period": period + "Z", "kwh": round(max(e_max - start, 0.0), 5)})
-        prev_max = e_max
-    return out
+    by_hour = {}
+    for measured_at, delta in energy_deltas(db, since, device_id):
+        hour = measured_at.replace(minute=0, second=0, microsecond=0)
+        by_hour[hour] = by_hour.get(hour, 0.0) + delta
+    return [
+        {"period": hour.isoformat(timespec="seconds") + "Z", "kwh": round(by_hour[hour], 5)}
+        for hour in sorted(by_hour)
+    ]
 
 
 @router.get("/quality")
 def quality(
     device_id: str | None = None,
     hours: int = Query(24, ge=1, le=24 * 30),
-    vmin: float = 117.0,
-    vmax: float = 133.0,
-    fmin: float = 59.5,
-    fmax: float = 60.5,
+    vmin: float = Query(117.0, ge=0, le=500),
+    vmax: float = Query(133.0, ge=0, le=500),
+    fmin: float = Query(59.5, ge=0, le=100),
+    fmax: float = Query(60.5, ge=0, le=100),
     db: Session = Depends(get_db),
 ):
-    """Qualidade da energia: quanto tempo a tensão/frequência ficaram fora da faixa."""
+    """Percentual de amostras válidas fora da faixa, entre leituras com rede."""
+    if vmin > vmax or fmin > fmax:
+        raise HTTPException(422, "O limite mínimo deve ser menor ou igual ao máximo.")
     since = utcnow() - timedelta(hours=hours)
     base = [Reading.created_at >= since]
     if device_id:
@@ -77,23 +68,24 @@ def quality(
         func.min(case((freq_ok, Reading.frequency))),
         func.avg(case((freq_ok, Reading.frequency))),
         func.max(case((freq_ok, Reading.frequency))),
+        count_if(freq_ok),
         count_if(and_(freq_ok, or_(Reading.frequency < fmin, Reading.frequency > fmax))),
     ).where(*mains)
-    n, low, high, v_min, v_avg, v_max, f_min, f_avg, f_max, f_out = db.execute(q).one()
+    n, low, high, v_min, v_avg, v_max, f_min, f_avg, f_max, n_freq, f_out = db.execute(q).one()
     n = int(n or 0)
 
     def r(x, nd=2):
         return round(float(x), nd) if x is not None else None
 
-    def pct(x):
-        return round(100.0 * float(x or 0) / n, 2) if n else None
+    def pct(x, count):
+        return round(100.0 * float(x or 0) / count, 2) if count else None
 
     return {
         "hours": hours,
         "readings_total": int(total),
         "readings_with_mains": n,
         "voltage": {"min": r(v_min), "avg": r(v_avg), "max": r(v_max), "range": [vmin, vmax],
-                    "low_pct": pct(low), "high_pct": pct(high)},
+                    "low_pct": pct(low, n), "high_pct": pct(high, n)},
         "frequency": {"min": r(f_min), "avg": r(f_avg), "max": r(f_max), "range": [fmin, fmax],
-                      "out_pct": pct(f_out)},
+                      "valid_readings": int(n_freq or 0), "out_pct": pct(f_out, n_freq)},
     }

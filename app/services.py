@@ -55,7 +55,7 @@ def nominal_voltage(db: Session) -> float:
 
 
 # ----------------------------- modelo -----------------------------
-def train_model(db: Session) -> dict:
+def _train_model(db: Session, total: int) -> dict:
     """Treina o Isolation Forest com as leituras mais recentes.
 
     Leituras que voce marcou como anomalia real ficam de fora do treino.
@@ -74,7 +74,13 @@ def train_model(db: Session) -> dict:
             f"Leituras insuficientes para treinar: {len(rows)} (mínimo {s.min_train_samples})."
         )
     X = np.array([tuple(r) for r in rows], dtype=float)
-    return detector.train(X)
+    return detector.train(X, total)
+
+
+def train_model(db: Session) -> dict:
+    with _train_lock:
+        total = db.scalar(select(func.count(Reading.id))) or 0
+        return _train_model(db, total)
 
 
 def maybe_train() -> None:
@@ -87,9 +93,10 @@ def maybe_train() -> None:
             total = db.scalar(select(func.count(Reading.id))) or 0
             if total < s.min_train_samples:
                 return
-            if detector.ready and total % s.retrain_every != 0:
+            last_total = detector.meta.get("readings_at_train")
+            if detector.ready and last_total is not None and 0 <= total - last_total < s.retrain_every:
                 return
-            meta = train_model(db)
+            meta = _train_model(db, total)
             log.info("Modelo treinado com %s leituras", meta["n_samples"])
     except Exception:
         log.exception("Falha ao treinar o modelo")
@@ -149,7 +156,7 @@ def evaluate_alerts(db: Session, reading: Reading) -> list[int]:
     if not created:
         return []
     db.add_all(created)
-    db.commit()
+    db.flush()
     return [e.id for e in created]
 
 
@@ -171,7 +178,8 @@ def check_offline() -> None:
     new_ids: list[int] = []
     with SessionLocal() as db:
         rows = db.execute(
-            select(Reading.device_id, func.max(Reading.created_at)).group_by(Reading.device_id)
+            select(Reading.device_id, func.max(func.coalesce(Reading.received_at, Reading.created_at)))
+            .group_by(Reading.device_id)
         ).all()
         for device, last in rows:
             silent = (now - last).total_seconds()
